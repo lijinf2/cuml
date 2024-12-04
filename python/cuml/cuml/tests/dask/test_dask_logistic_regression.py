@@ -664,7 +664,7 @@ def test_standardization_on_normal_dataset(
     assert lr.dtype == datatype
 
 
-def standardize_dataset_for_lr(X_train, X_test, fit_intercept):
+def standardize_dataset(X_train, X_test, fit_intercept):
     # This function is for testing standardization.
     # if fit_intercept is true, mean-center then scale the dataset
     # if fit_intercept is false, scale the dataset without mean-centering
@@ -685,7 +685,7 @@ def standardize_dataset_for_lr(X_train, X_test, fit_intercept):
     return (X_train_scaled, X_test_scaled, scaler)
 
 
-def convert_model_to_origin(coef_, intercept_, fit_intercept, scaler):
+def adjust_model_for_comparison(coef_, intercept_, fit_intercept, scaler):
     # This function is for testing standardization.
     # It converts the coef_ and intercept_ of Dask Cuml to align wih scikit-learn for comparison.
     coef_ = coef_ if isinstance(coef_, np.ndarray) else coef_.to_numpy()
@@ -790,7 +790,7 @@ def test_standardization_on_scaled_dataset(
     )
 
     # run CPU with standardized dataset
-    X_train_scaled, X_test_scaled, scaler = standardize_dataset_for_lr(
+    X_train_scaled, X_test_scaled, scaler = standardize_dataset(
         X_train, X_test, fit_intercept
     )
 
@@ -812,7 +812,7 @@ def test_standardization_on_scaled_dataset(
     )
 
     # assert equal the accuracy and the model
-    mgon_coef_origin, mgon_intercept_origin = convert_model_to_origin(
+    mgon_coef_origin, mgon_intercept_origin = adjust_model_for_comparison(
         mgon.coef_, mgon.intercept_, fit_intercept, scaler
     )
 
@@ -913,7 +913,7 @@ def test_standardization_example(fit_intercept, reg_dtype, client):
         datatype, n_rows, n_cols, n_info, n_classes=n_classes
     )
 
-    X_scaled, _, scaler = standardize_dataset_for_lr(X, X, fit_intercept)
+    X_scaled, _, scaler = standardize_dataset(X, X, fit_intercept)
 
     X_df, y_df = _prep_training_data(client, X, y, n_parts)
     from cuml.dask.linear_model import LogisticRegression as cumlLBFGS_dask
@@ -921,7 +921,7 @@ def test_standardization_example(fit_intercept, reg_dtype, client):
     lr_on = cumlLBFGS_dask(standardization=True, verbose=True, **est_params)
     lr_on.fit(X_df, y_df)
 
-    lron_coef_origin, lron_intercept_origin = convert_model_to_origin(
+    lron_coef_origin, lron_intercept_origin = adjust_model_for_comparison(
         lr_on.coef_, lr_on.intercept_, fit_intercept, scaler
     )
 
@@ -1040,7 +1040,7 @@ def test_standardization_sparse(
     X = csr_matrix(X_origin)
     assert X.nnz == nnz and X.shape == (n_rows, n_cols)
 
-    X_scaled, _, scaler = standardize_dataset_for_lr(
+    X_scaled, _, scaler = standardize_dataset(
         X_origin, X_origin, fit_intercept
     )
 
@@ -1061,7 +1061,7 @@ def test_standardization_sparse(
     lr_on = cumlLBFGS_dask(standardization=True, verbose=True, **est_params)
     lr_on.fit(X_da, y_da)
 
-    lron_coef_origin, lron_intercept_origin = convert_model_to_origin(
+    lron_coef_origin, lron_intercept_origin = adjust_model_for_comparison(
         lr_on.coef_, lr_on.intercept_, fit_intercept, scaler
     )
 
@@ -1132,7 +1132,7 @@ def test_sparse_all_zeroes(
             X_cpu,
             _,
             scaler,
-        ) = standardize_dataset_for_lr(X, X, fit_intercept)
+        ) = standardize_dataset(X, X, fit_intercept)
 
     cpu_lr = LogisticRegression(fit_intercept=fit_intercept)
     cpu_lr.fit(X_cpu, y)
@@ -1144,7 +1144,7 @@ def test_sparse_all_zeroes(
         mg_coef = mg.coef_
         mg_intercept = mg.intercept_
     else:
-        mg_coef, mg_intercept = convert_model_to_origin(
+        mg_coef, mg_intercept = adjust_model_for_comparison(
             mg.coef_, mg.intercept_, fit_intercept, scaler
         )
 
