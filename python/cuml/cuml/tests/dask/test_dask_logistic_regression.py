@@ -1040,12 +1040,9 @@ def test_standardization_sparse(
     X = csr_matrix(X_origin)
     assert X.nnz == nnz and X.shape == (n_rows, n_cols)
 
-    from sklearn.preprocessing import StandardScaler
-
-    scaler = StandardScaler(with_mean=fit_intercept, with_std=True)
-    scaler.fit(X_origin)
-    scaler.scale_ = np.sqrt(scaler.var_ * len(X_origin) / (len(X_origin) - 1))
-    X_scaled = scaler.transform(X_origin)
+    X_scaled, _, scaler = standardize_dataset_for_lr(
+        X_origin, X_origin, fit_intercept
+    )
 
     X_da, y_da = _prep_training_data_sparse(
         client, X, y, partitions_per_worker=n_parts
@@ -1064,13 +1061,9 @@ def test_standardization_sparse(
     lr_on = cumlLBFGS_dask(standardization=True, verbose=True, **est_params)
     lr_on.fit(X_da, y_da)
 
-    lron_coef_origin = lr_on.coef_ * scaler.scale_
-    if fit_intercept is True:
-        lron_intercept_origin = lr_on.intercept_ + np.dot(
-            lr_on.coef_, scaler.mean_
-        )
-    else:
-        lron_intercept_origin = lr_on.intercept_
+    lron_coef_origin, lron_intercept_origin = convert_model_to_origin(
+        lr_on.coef_, lr_on.intercept_, fit_intercept, scaler
+    )
 
     from cuml.linear_model import LogisticRegression as SG
 
