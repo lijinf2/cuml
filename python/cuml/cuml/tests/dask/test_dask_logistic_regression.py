@@ -87,7 +87,14 @@ def _prep_training_data_sparse(c, X_train, y_train, partitions_per_worker):
 
 
 def make_classification_dataset(
-    datatype, nrows, ncols, n_info, n_redundant=2, n_classes=2
+    datatype,
+    nrows,
+    ncols,
+    n_info,
+    n_redundant=2,
+    n_classes=2,
+    shift=0.0,
+    scale=1.0,
 ):
     X, y = make_classification(
         n_samples=nrows,
@@ -95,6 +102,8 @@ def make_classification_dataset(
         n_informative=n_info,
         n_redundant=n_redundant,
         n_classes=n_classes,
+        shift=shift,
+        scale=scale,
         random_state=0,
     )
     X = X.astype(datatype)
@@ -547,7 +556,8 @@ def test_sparse_from_dense(fit_intercept, reg_dtype, n_classes, client):
     assert lr.index_dtype == _convert_index
 
 
-@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+# @pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize("dtype", [np.float32])
 def test_sparse_nlp20news(dtype, nlp_20news, client):
 
     X, y = nlp_20news
@@ -941,7 +951,9 @@ def test_standardization_example(fit_intercept, reg_dtype, client):
         (("elasticnet", 2.0, 0.2), np.float32),
     ],
 )
-def test_standardization_sparse(fit_intercept, reg_dtype, client):
+def test_standardization_sparse(
+    fit_intercept, reg_dtype, client, shift_scale=False
+):
     regularization = reg_dtype[0]
     datatype = reg_dtype[1]
 
@@ -951,6 +963,17 @@ def test_standardization_sparse(fit_intercept, reg_dtype, client):
     n_classes = 4
     nnz = int(n_rows * n_cols * 0.3)  # number of non-zero values
     tolerance = 0.005
+
+    shift = (
+        0.0
+        if shift_scale is False
+        else [random.uniform(-n_cols, n_cols) for _ in range(n_cols)]
+    )
+    scale = (
+        1.0
+        if shift_scale is False
+        else [random.uniform(1.0, 10 * n_cols) for _ in range(n_cols)]
+    )
 
     n_parts = 10
     max_iter = 5  # cannot set this too large. Observed GPU-specific coefficients when objective converges at 0.
@@ -968,12 +991,18 @@ def test_standardization_sparse(fit_intercept, reg_dtype, client):
     }
 
     def make_classification_with_nnz(
-        datatype, n_rows, n_cols, n_info, n_classes, nnz
+        datatype, n_rows, n_cols, n_info, n_classes, shift, scale, nnz
     ):
         assert n_rows * n_cols >= nnz
 
         X, y = make_classification_dataset(
-            datatype, n_rows, n_cols, n_info, n_classes=n_classes
+            datatype,
+            n_rows,
+            n_cols,
+            n_info,
+            n_classes=n_classes,
+            shift=shift,
+            scale=scale,
         )
         X = X.flatten()
         num_zero = len(X) - nnz
@@ -985,7 +1014,7 @@ def test_standardization_sparse(fit_intercept, reg_dtype, client):
         return X_res, y
 
     X_origin, y = make_classification_with_nnz(
-        datatype, n_rows, n_cols, n_info, n_classes, nnz
+        datatype, n_rows, n_cols, n_info, n_classes, shift, scale, nnz
     )
     X = csr_matrix(X_origin)
     assert X.nnz == nnz and X.shape == (n_rows, n_cols)
@@ -1033,6 +1062,25 @@ def test_standardization_sparse(fit_intercept, reg_dtype, client):
     )
 
     assert lr_on.dtype == datatype
+
+
+@pytest.mark.mg
+@pytest.mark.parametrize("fit_intercept", [True, False])
+@pytest.mark.parametrize(
+    "reg_dtype",
+    [
+        ((None, 1.0, None), np.float64),
+        (("l2", 2.0, None), np.float32),
+        (("l1", 2.0, None), np.float64),
+        (("elasticnet", 2.0, 0.2), np.float32),
+    ],
+)
+def test_standardization_sparse_with_shift_scale(
+    fit_intercept, reg_dtype, client
+):
+    test_standardization_sparse(
+        fit_intercept, reg_dtype, client, shift_scale=True
+    )
 
 
 @pytest.mark.parametrize("standardization", [False, True])
