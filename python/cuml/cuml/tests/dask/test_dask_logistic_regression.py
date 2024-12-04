@@ -664,6 +664,45 @@ def test_standardization_on_normal_dataset(
     assert lr.dtype == datatype
 
 
+def standardize_dataset_for_lr(X_train, X_test, fit_intercept):
+    # This function is for testing standardization.
+    # if fit_intercept is true, mean-center then scale the dataset
+    # if fit_intercept is false, scale the dataset without mean-centering
+    from sklearn.preprocessing import StandardScaler
+
+    scaler = StandardScaler(with_mean=fit_intercept, with_std=True)
+    scaler.fit(X_train)
+    scaler.scale_ = np.sqrt(scaler.var_ * len(X_train) / (len(X_train) - 1))
+
+    def transform_func(scaler, X_data):
+        X_res = scaler.transform(X_data)
+        nan_mask = np.isnan(X_res)
+        X_res[nan_mask] = X_data[nan_mask]
+        return X_res
+
+    X_train_scaled = transform_func(scaler, X_train)
+    X_test_scaled = transform_func(scaler, X_test)
+    return (X_train_scaled, X_test_scaled, scaler)
+
+
+def convert_model_to_origin(coef_, intercept_, fit_intercept, scaler):
+    # This function is for testing standardization.
+    # It converts the coef_ and intercept_ of Dask Cuml to align wih scikit-learn for comparison.
+    coef_ = coef_ if isinstance(coef_, np.ndarray) else coef_.to_numpy()
+    intercept_ = (
+        intercept_
+        if isinstance(intercept_, np.ndarray)
+        else intercept_.to_numpy()
+    )
+
+    coef_origin = coef_ * scaler.scale_
+    if fit_intercept is True:
+        intercept_origin = intercept_ + np.dot(coef_, scaler.mean_)
+    else:
+        intercept_origin = intercept_
+    return (coef_origin, intercept_origin)
+
+
 @pytest.mark.mg
 @pytest.mark.parametrize("fit_intercept", [False, True])
 @pytest.mark.parametrize(
@@ -700,7 +739,6 @@ def test_standardization_on_scaled_dataset(
     from cuml.dask.linear_model.logistic_regression import (
         LogisticRegression as cumlLBFGS_dask,
     )
-    from sklearn.preprocessing import StandardScaler
 
     X, y = make_classification_dataset(
         datatype,
@@ -751,14 +789,10 @@ def test_standardization_on_scaled_dataset(
         total_tol=tolerance,
     )
 
-    # run CPU with StandardScaler
-    # if fit_intercept is true, mean center then scale the dataset
-    # if fit_intercept is false, scale the dataset without mean center
-    scaler = StandardScaler(with_mean=fit_intercept, with_std=True)
-    scaler.fit(X_train)
-    scaler.scale_ = np.sqrt(scaler.var_ * len(X_train) / (len(X_train) - 1))
-    X_train_scaled = scaler.transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
+    # run CPU with standardized dataset
+    X_train_scaled, X_test_scaled, scaler = standardize_dataset_for_lr(
+        X_train, X_test, fit_intercept
+    )
 
     sk_solver = "lbfgs" if penalty == "l2" or penalty == "none" else "saga"
     cpu = CPULR(
@@ -778,13 +812,9 @@ def test_standardization_on_scaled_dataset(
     )
 
     # assert equal the accuracy and the model
-    mgon_coef_origin = mgon.coef_.to_numpy() * scaler.scale_
-    if fit_intercept is True:
-        mgon_intercept_origin = mgon.intercept_.to_numpy() + np.dot(
-            mgon.coef_.to_numpy(), scaler.mean_
-        )
-    else:
-        mgon_intercept_origin = mgon.intercept_.to_numpy()
+    mgon_coef_origin, mgon_intercept_origin = convert_model_to_origin(
+        mgon.coef_, mgon.intercept_, fit_intercept, scaler
+    )
 
     if sk_solver == "lbfgs":
         assert array_equal(
@@ -1085,14 +1115,19 @@ def test_standardization_sparse_with_shift_scale(
 
 @pytest.mark.parametrize("standardization", [False, True])
 @pytest.mark.parametrize("fit_intercept", [False, True])
-def test_sparse_all_zeroes(standardization, fit_intercept, client):
-    n_parts = 2
-    datatype = "float32"
+def test_sparse_all_zeroes(
+    standardization, fit_intercept, client, X=None, y=None, n_parts=2
+):
+    if X is None:
+        X = np.array([(0, 0), (0, 0), (0, 0), (0, 0)], "float32")
 
-    X = np.array([(0, 0), (0, 0), (0, 0), (0, 0)], datatype)
-    y = np.array([1.0, 1.0, 0.0, 0.0], datatype)
-    X = csr_matrix(X)
-    X_da_csr, y_da = _prep_training_data_sparse(client, X, y, n_parts)
+    if y is None:
+        y = np.array([1.0, 1.0, 0.0, 0.0], "float32")
+
+    unit_tol = 0.001
+
+    X_csr = csr_matrix(X)
+    X_da_csr, y_da = _prep_training_data_sparse(client, X_csr, y, n_parts)
 
     from cuml.dask.linear_model import LogisticRegression as cumlLBFGS_dask
 
@@ -1106,19 +1141,56 @@ def test_sparse_all_zeroes(standardization, fit_intercept, client):
 
     from sklearn.linear_model import LogisticRegression
 
+    if standardization is False:
+        X_cpu = X
+    else:
+        (
+            X_cpu,
+            _,
+            scaler,
+        ) = standardize_dataset_for_lr(X, X, fit_intercept)
+
     cpu_lr = LogisticRegression(fit_intercept=fit_intercept)
-    cpu_lr.fit(X, y)
-    cpu_preds = cpu_lr.predict(X)
+    cpu_lr.fit(X_cpu, y)
+    cpu_preds = cpu_lr.predict(X_cpu)
 
     assert array_equal(mg_preds, cpu_preds)
 
+    if standardization is False:
+        mg_coef = mg.coef_
+        mg_intercept = mg.intercept_
+    else:
+        mg_coef, mg_intercept = convert_model_to_origin(
+            mg.coef_, mg.intercept_, fit_intercept, scaler
+        )
+
     assert array_equal(
-        mg.coef_,
+        mg_coef,
         cpu_lr.coef_,
+        unit_tol=unit_tol,
         with_sign=True,
     )
     assert array_equal(
-        mg.intercept_,
+        mg_intercept,
         cpu_lr.intercept_,
+        unit_tol=unit_tol,
         with_sign=True,
+    )
+
+
+@pytest.mark.parametrize("fit_intercept", [False, True])
+def test_sparse_one_gpu_all_zeroes(fit_intercept, client):
+    """
+    This test case requires two GPUs to function properly.
+    """
+    datatype = "float32"
+    X = np.array([(10, 20), (0, 0), (0, 0), (0, 0)], datatype)
+    y = np.array([1.0, 1.0, 0.0, 0.0], datatype)
+    test_sparse_all_zeroes(
+        standardization=True,
+        fit_intercept=fit_intercept,
+        client=client,
+        X=X,
+        y=y,
+        n_parts=2,
     )
