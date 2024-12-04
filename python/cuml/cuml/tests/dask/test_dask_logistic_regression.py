@@ -913,12 +913,7 @@ def test_standardization_example(fit_intercept, reg_dtype, client):
         datatype, n_rows, n_cols, n_info, n_classes=n_classes
     )
 
-    from sklearn.preprocessing import StandardScaler
-
-    scaler = StandardScaler(with_mean=fit_intercept, with_std=True)
-    scaler.fit(X)
-    scaler.scale_ = np.sqrt(scaler.var_ * len(X) / (len(X) - 1))
-    X_scaled = scaler.transform(X)
+    X_scaled, _, scaler = standardize_dataset_for_lr(X, X, fit_intercept)
 
     X_df, y_df = _prep_training_data(client, X, y, n_parts)
     from cuml.dask.linear_model import LogisticRegression as cumlLBFGS_dask
@@ -926,13 +921,9 @@ def test_standardization_example(fit_intercept, reg_dtype, client):
     lr_on = cumlLBFGS_dask(standardization=True, verbose=True, **est_params)
     lr_on.fit(X_df, y_df)
 
-    lron_coef_origin = lr_on.coef_.to_numpy() * scaler.scale_
-    if fit_intercept is True:
-        lron_intercept_origin = lr_on.intercept_.to_numpy() + np.dot(
-            lr_on.coef_.to_numpy(), scaler.mean_
-        )
-    else:
-        lron_intercept_origin = lr_on.intercept_.to_numpy()
+    lron_coef_origin, lron_intercept_origin = convert_model_to_origin(
+        lr_on.coef_, lr_on.intercept_, fit_intercept, scaler
+    )
 
     X_df_scaled, y_df = _prep_training_data(client, X_scaled, y, n_parts)
     lr_off = cumlLBFGS_dask(standardization=False, **est_params)
